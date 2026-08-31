@@ -1,0 +1,117 @@
+name: Claude Issue Triage
+
+on:
+  issues:
+    types: [opened, edited]
+
+concurrency:
+  group: claude-triage-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    # Evita solaparse con claude.yml, que ya reacciona cuando el issue menciona @claude
+    if: >
+      !contains(github.event.issue.body, '@claude') &&
+      !contains(github.event.issue.title, '@claude')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Issue Triage
+        id: claude-triage
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO_FULL_NAME: ${{ github.repository }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          prompt: |
+            Eres el sistema de triage automático de issues de este repositorio: un Tetris en
+            JavaScript vanilla (HTML5 Canvas), sin dependencias ni build. Lee CLAUDE.md primero
+            para entender la arquitectura (board, piezas, colisiones, wall kicks, game loop,
+            scoring, nivel/velocidad, ghost piece, spawn/game over) antes de analizar nada.
+
+            El issue a analizar es el número $ISSUE_NUMBER del repo $REPO_FULL_NAME.
+
+            Sigue estos pasos EN ORDEN:
+
+            1. Lee el issue completo:
+               `gh issue view $ISSUE_NUMBER --json title,body,labels,comments`
+
+            2. Investiga el código relevante con Read/Grep/Glob (game.js, index.html, style.css)
+               para identificar los archivos, funciones y símbolos concretos implicados en lo que
+               describe el issue. No adivines: cita línea y símbolo real.
+
+            3. Obtén el catálogo de labels disponibles con `gh label list` y elige EXCLUSIVAMENTE
+               nombres que aparezcan en esa salida. Nunca inventes ni crees labels nuevos
+               (no uses `gh label create`). Aplica los labels que correspondan con:
+               `gh issue edit $ISSUE_NUMBER --add-label "label1,label2"`
+               Si el issue ya tiene un label correcto, no lo dupliques. Si esta es una edición y
+               algún label existente ya no aplica claramente, quítalo con `--remove-label`.
+
+            4. Escribe un diagnóstico técnico en el archivo `/tmp/diagnostico.md` (usa la
+               herramienta Write, y escribe SOLO dentro de /tmp) con este formato exacto:
+
+               ```
+               <!-- claude-triage-diagnostic -->
+               ## 🔍 Diagnóstico automático
+
+               **Tipo:** <bug|enhancement|question|documentation|...> · **Labels aplicados:** `<labels>`
+               **Confianza:** <alta|media|baja>
+
+               ### Resumen
+               <1-3 frases resumiendo el problema o petición>
+
+               ### Archivos y símbolos implicados
+               - `archivo:línea` — <símbolo/función y por qué es relevante>
+
+               ### Causa raíz probable
+               <explicación técnica concreta>
+
+               ### Propuesta de implementación
+               1. <paso concreto y accionable>
+               2. ...
+
+               ### Cómo verificar
+               <cómo comprobar manualmente el fix, siguiendo la sección "Running the game" de CLAUDE.md>
+
+               ### Riesgos / preguntas abiertas
+               <si no hay, escribe "Ninguna">
+               ```
+
+               Sé específico y técnico: este diagnóstico lo usará un desarrollador para implementar
+               la solución directamente, no es un resumen genérico.
+
+            5. Publica o actualiza el comentario de diagnóstico de forma idempotente. Primero busca
+               si ya existe un comentario con el marcador:
+               ```
+               gh api repos/$REPO_FULL_NAME/issues/$ISSUE_NUMBER/comments \
+                 --jq '.[] | select(.body | contains("<!-- claude-triage-diagnostic -->")) | .id'
+               ```
+               - Si devuelve un ID, actualiza ese comentario:
+                 `gh api -X PATCH repos/$REPO_FULL_NAME/issues/comments/<ID> -F body=@/tmp/diagnostico.md`
+               - Si no devuelve nada, crea uno nuevo:
+                 `gh issue comment $ISSUE_NUMBER --body-file /tmp/diagnostico.md`
+
+            Reglas estrictas:
+            - NO modifiques ningún archivo del repositorio (game.js, index.html, style.css, etc.).
+            - NO crees ramas, commits ni pull requests.
+            - NO cierres el issue ni cambies su estado.
+            - NO crees labels nuevos.
+            - Solo puedes escribir en /tmp.
+
+          claude_args: |
+            --allowedTools "Read,Glob,Grep,Write,Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh label list:*),Bash(gh api:*)"
+            --disallowedTools "Edit,NotebookEdit"
+            --max-turns 25
