@@ -111,6 +111,8 @@ jobs:
             - NO crees labels nuevos.
             - Solo puedes escribir en /tmp.
 
+          show_full_output: true
+
           claude_args: |
             --allowedTools "Read,Glob,Grep,Write,Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh label list:*),Bash(gh api:*)"
             --disallowedTools "Edit,NotebookEdit"
